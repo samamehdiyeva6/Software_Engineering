@@ -260,6 +260,26 @@ def authenticate_user(email: str, password: str) -> dict | None:
         return dict(row)
 
 
+def _parse_budget(budget_raw: str) -> tuple[bool, str | None, float]:
+    cleaned = (budget_raw or "").strip().replace("$", "").replace(",", "")
+    try:
+        budget = float(cleaned) if cleaned else 0.0
+    except ValueError:
+        return False, "Budget must be a valid number.", 0.0
+    if budget < 0:
+        return False, "Budget cannot be negative.", 0.0
+    return True, None, budget
+
+
+def get_project_for_owner(project_id: int, owner_user_id: int) -> dict | None:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM projects WHERE id = ? AND owner_user_id = ?",
+            (project_id, owner_user_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def create_project(
     owner_user_id: int,
     title: str,
@@ -275,13 +295,9 @@ def create_project(
     if not title:
         return False, "Project title is required.", None
 
-    cleaned_budget = (budget_raw or "").strip().replace("$", "").replace(",", "")
-    try:
-        budget = float(cleaned_budget) if cleaned_budget else 0.0
-    except ValueError:
-        return False, "Budget must be a valid number.", None
-    if budget < 0:
-        return False, "Budget cannot be negative.", None
+    ok_b, bmsg, budget = _parse_budget(budget_raw)
+    if not ok_b:
+        return False, bmsg, None
 
     if status not in ("draft", "published", "active", "completed", "cancelled"):
         status = "published"
@@ -316,6 +332,90 @@ def create_project(
         )
         conn.commit()
     return True, None, project_id
+
+
+def update_project(
+    project_id: int,
+    owner_user_id: int,
+    title: str,
+    description: str,
+    customer_ref: str,
+    category: str,
+    start_date: str,
+    end_date: str,
+    budget_raw: str,
+    status: str,
+) -> tuple[bool, str | None]:
+    title = (title or "").strip()
+    if not title:
+        return False, "Project title is required."
+
+    ok_b, bmsg, budget = _parse_budget(budget_raw)
+    if not ok_b:
+        return False, bmsg
+
+    if status not in ("draft", "published", "active", "completed", "cancelled"):
+        status = "published"
+
+    with _connect() as conn:
+        cur = conn.execute(
+            """
+            UPDATE projects SET
+                title = ?, description = ?, customer_ref = ?, category = ?,
+                start_date = ?, end_date = ?, budget = ?, status = ?,
+                updated_at = datetime('now')
+            WHERE id = ? AND owner_user_id = ?
+            """,
+            (
+                title,
+                (description or "").strip(),
+                (customer_ref or "").strip(),
+                (category or "").strip(),
+                (start_date or "").strip(),
+                (end_date or "").strip(),
+                budget,
+                status,
+                project_id,
+                owner_user_id,
+            ),
+        )
+        if cur.rowcount == 0:
+            return False, "Project not found or access denied."
+        conn.execute(
+            """
+            INSERT INTO audit_events (actor_user_id, entity_type, entity_id, action, payload_json)
+            VALUES (?, 'project', ?, 'update', NULL)
+            """,
+            (owner_user_id, project_id),
+        )
+        conn.commit()
+    return True, None
+
+
+def delete_project(project_id: int, owner_user_id: int) -> tuple[bool, str | None]:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM projects WHERE id = ? AND owner_user_id = ?",
+            (project_id, owner_user_id),
+        ).fetchone()
+        if not row:
+            return False, "Project not found or access denied."
+
+        conn.execute("DELETE FROM escrow_transactions WHERE project_id = ?", (project_id,))
+        conn.execute("DELETE FROM milestones WHERE project_id = ?", (project_id,))
+        conn.execute("DELETE FROM disputes WHERE project_id = ?", (project_id,))
+        conn.execute("DELETE FROM proposals WHERE project_id = ?", (project_id,))
+        conn.execute("DELETE FROM contracts WHERE project_id = ?", (project_id,))
+        conn.execute("DELETE FROM projects WHERE id = ? AND owner_user_id = ?", (project_id, owner_user_id))
+        conn.execute(
+            """
+            INSERT INTO audit_events (actor_user_id, entity_type, entity_id, action, payload_json)
+            VALUES (?, 'project', ?, 'delete', NULL)
+            """,
+            (owner_user_id, project_id),
+        )
+        conn.commit()
+    return True, None
 
 
 def create_password_reset_token(user_id: int, ttl_minutes: int = 30) -> tuple[str, str]:

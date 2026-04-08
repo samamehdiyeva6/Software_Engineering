@@ -4,9 +4,12 @@ from database import (
     authenticate_user,
     create_project,
     create_user,
+    delete_project,
+    get_project_for_owner,
     get_projects_for_user,
     init_db,
     is_valid_email_format,
+    update_project,
 )
 
 ft.icons = ft.Icons
@@ -67,6 +70,55 @@ def _logout_session(page):
 
 
 PUBLIC_ROUTES = frozenset({"/", "/register"})
+
+
+def route_query_int(page, key: str = "id") -> int | None:
+    import urllib.parse
+    if not page.route or "?" not in page.route:
+        return None
+    try:
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(page.route).query)
+        v = qs.get(key)
+        if not v or not v[0].strip():
+            return None
+        return int(v[0].strip())
+    except (ValueError, TypeError):
+        return None
+
+
+def _confirm_delete_project(page, project_id: int, user_id: int):
+    def close_dlg(_):
+        dlg.open = False
+        page.update()
+
+    def do_delete(_):
+        ok, msg = delete_project(project_id, user_id)
+        dlg.open = False
+        page.update()
+        if ok:
+            if page.route and page.route.startswith("/projects"):
+                router(page)
+            else:
+                page.go("/projects")
+        else:
+            snack = ft.SnackBar(ft.Text(msg or "Could not delete project."), bgcolor=DANGER)
+            page.overlay.append(snack)
+            snack.open = True
+            page.update()
+
+    dlg = ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Delete project?"),
+        content=ft.Text("This will remove the project and related draft records. This cannot be undone."),
+        actions=[
+            ft.TextButton("Cancel", on_click=close_dlg),
+            ft.TextButton("Delete", on_click=do_delete, style=ft.ButtonStyle(color=DANGER)),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+    page.overlay.append(dlg)
+    dlg.open = True
+    page.update()
 
 
 def pill(text, color=PRIMARY, bg="#E8F0FF"):
@@ -883,7 +935,7 @@ def view_admin_overview(page):
         ),
     )
 
-    table = ft.DataTable(
+    table = ft.Row(scroll=ft.ScrollMode.AUTO, controls=[ft.DataTable(
         columns=[
             ft.DataColumn(ft.Text("Transaction")),
             ft.DataColumn(ft.Text("Project")),
@@ -914,7 +966,7 @@ def view_admin_overview(page):
                 ft.DataCell(pill("Pending", color=WARNING, bg="#FEF3C7")),
             ]),
         ],
-    )
+    )])
 
     right = ft.Column(
         spacing=12,
@@ -1065,13 +1117,14 @@ def view_projects(page):
 
     user_id = page.session.store.get("user_id")
     projects = get_projects_for_user(user_id) if user_id else []
+    first_pid = int(projects[0]["id"]) if (projects and user_id) else None
 
     def status_pill(project_status: str):
         s = (project_status or "").strip().lower()
         if s == "draft":
             return pill("Draft", color=TEXT, bg="#F1F5F9")
         if s == "published":
-            return pill("Awarded", color=PRIMARY, bg="#E8F0FF")
+            return pill("Open", color=INFO, bg="#E0F2FE")
         if s == "active":
             return pill("Active", color=PRIMARY, bg="#E8F0FF")
         if s == "completed":
@@ -1081,7 +1134,7 @@ def view_projects(page):
         return pill(project_status or "Unknown", color=PRIMARY, bg="#E8F0FF")
 
     rows = []
-    if projects:
+    if projects and user_id:
         for p in projects:
             pid = int(p["id"])
             project_id_str = f"PRJ-{pid:04d}"
@@ -1099,6 +1152,26 @@ def view_projects(page):
                         ft.DataCell(status_pill(p.get("status"))),
                         ft.DataCell(ft.Text(timeline)),
                         ft.DataCell(ft.Text(budget_str)),
+                        ft.DataCell(
+                            ft.Row(
+                                spacing=2,
+                                controls=[
+                                    ft.TextButton(
+                                        "Open",
+                                        on_click=lambda e, i=pid: page.go(f"/project-detail?id={i}"),
+                                    ),
+                                    ft.TextButton(
+                                        "Edit",
+                                        on_click=lambda e, i=pid: page.go(f"/project-create?id={i}"),
+                                    ),
+                                    ft.TextButton(
+                                        "Delete",
+                                        style=ft.ButtonStyle(color=DANGER),
+                                        on_click=lambda e, i=pid: _confirm_delete_project(page, i, user_id),
+                                    ),
+                                ],
+                            )
+                        ),
                     ]
                 )
             )
@@ -1107,26 +1180,42 @@ def view_projects(page):
             ft.DataRow(
                 cells=[
                     ft.DataCell(ft.Text("—")),
-                    ft.DataCell(ft.Text("No projects yet. Create one.")),
+                    ft.DataCell(ft.Text("No projects yet. Use Create New Project.")),
                     ft.DataCell(ft.Text("—")),
-                    ft.DataCell(pill("Draft", color=TEXT, bg="#F1F5F9")),
+                    ft.DataCell(pill("—", color=TEXT, bg="#F1F5F9")),
                     ft.DataCell(ft.Text("—")),
                     ft.DataCell(ft.Text("$0.00")),
+                    ft.DataCell(ft.Text("—")),
                 ]
             )
         ]
 
-    table = ft.DataTable(
+    if first_pid is not None:
+        open_latest = ft.TextButton(
+            "Open latest project",
+            on_click=lambda e: page.go(f"/project-detail?id={first_pid}"),
+        )
+    else:
+        open_latest = ft.TextButton("Create a project", on_click=lambda e: page.go("/project-create"))
+
+    def open_recommendation_project(_):
+        if first_pid is not None:
+            page.go(f"/project-detail?id={first_pid}")
+        else:
+            page.go("/project-create")
+
+    table = ft.Row(scroll=ft.ScrollMode.AUTO, controls=[ft.DataTable(
         columns=[
             ft.DataColumn(ft.Text("Project ID")),
-            ft.DataColumn(ft.Text("Project Details")),
+            ft.DataColumn(ft.Text("Title")),
             ft.DataColumn(ft.Text("Customer")),
             ft.DataColumn(ft.Text("Status")),
             ft.DataColumn(ft.Text("Timeline")),
             ft.DataColumn(ft.Text("Budget")),
+            ft.DataColumn(ft.Text("Actions")),
         ],
         rows=rows,
-    )
+    )])
 
     content = ft.Column(
         spacing=12,
@@ -1149,7 +1238,12 @@ def view_projects(page):
             ft.Row(
                 spacing=12,
                 controls=[
-                    stat_card("Total Projects", "24", "+2 from last month", ft.icons.FOLDER_OUTLINED),
+                    stat_card(
+                        "Total Projects",
+                        str(len(projects)),
+                        "Your saved projects",
+                        ft.icons.FOLDER_OUTLINED,
+                    ),
                     stat_card("Active Escrows", "$42,300", "Funds secured in transit", ft.icons.PAID_OUTLINED),
                     stat_card("Open Proposals", "12", "Awaiting your review", ft.icons.MARK_EMAIL_UNREAD_OUTLINED),
                     stat_card("Active Disputes", "0", "All contracts healthy", ft.icons.CHECK_CIRCLE_OUTLINE, SUCCESS),
@@ -1173,7 +1267,7 @@ def view_projects(page):
                                     pill("Open", color=INFO, bg="#E0F2FE"),
                                     pill("Awarded", color=PRIMARY, bg="#E8F0FF"),
                                     pill("Closed", color=MUTED, bg="#F1F5F9"),
-                                    ft.TextButton("Open Sample Project", on_click=lambda e: page.go("/project-detail")),
+                                    open_latest,
                                 ]),
                             ],
                         ),
@@ -1204,7 +1298,7 @@ def view_projects(page):
                                         controls=[
                                             ft.Text('New Proposals for "Mobile App API"', size=12, weight=ft.FontWeight.W_600),
                                             ft.Text("3 top-rated freelancers recently submitted competitive bids. Review their profiles now.", size=10, color=MUTED),
-                                            ft.TextButton("View Proposals", on_click=lambda e: page.go("/project-detail")),
+                                            ft.TextButton("View project", on_click=open_recommendation_project),
                                         ],
                                     ),
                                 ),
@@ -1243,14 +1337,65 @@ def view_project_detail(page):
         ("Settings", ft.icons.SETTINGS_OUTLINED, "/settings"),
     ]
 
-    proposals = ft.Column(
-        spacing=10,
-        controls=[
-            proposal_card("Sarah Jenkins", 5, "Experienced fintech dev with 8 years in Stripe.", "$4,200"),
-            proposal_card("Marcus Vane", 4.8, "Built 3 similar marketplaces last year.", "$4,500"),
-            proposal_card("Elena Rodriguez", 4.7, "Node.js expert, available to start immediately.", "$3,800"),
-        ],
-    )
+    user_id = page.session.store.get("user_id")
+    project_id = route_query_int(page, "id")
+
+    def detail_status_pill(project_status: str):
+        s = (project_status or "").strip().lower()
+        if s == "draft":
+            return pill("Draft", color=TEXT, bg="#F1F5F9")
+        if s == "published":
+            return pill("Open", color=INFO, bg="#E0F2FE")
+        if s == "active":
+            return pill("Active", color=PRIMARY, bg="#E8F0FF")
+        if s == "completed":
+            return pill("Closed", color=MUTED, bg="#F1F5F9")
+        if s == "cancelled":
+            return pill("Cancelled", color=DANGER, bg="#FEF2F2")
+        return pill(project_status or "Unknown", color=PRIMARY, bg="#E8F0FF")
+
+    if not user_id or not project_id:
+        content = ft.Container(
+            padding=24,
+            content=ft.Column(
+                spacing=12,
+                controls=[
+                    ft.Text("Project not found", size=18, weight=ft.FontWeight.W_700),
+                    ft.Text("Open a project from My Projects or create a new one.", size=12, color=MUTED),
+                    ft.Row(
+                        spacing=8,
+                        controls=[
+                            ft.ElevatedButton("My Projects", bgcolor=PRIMARY, color="white", on_click=lambda e: page.go("/projects")),
+                            ft.OutlinedButton("Create project", on_click=lambda e: page.go("/project-create")),
+                        ],
+                    ),
+                ],
+            ),
+        )
+        return shell(page, content, "/projects", nav_items, *session_user(page))
+
+    proj = get_project_for_owner(project_id, user_id)
+    if not proj:
+        content = ft.Container(
+            padding=24,
+            content=ft.Column(
+                spacing=12,
+                controls=[
+                    ft.Text("Access denied or project missing", size=18, weight=ft.FontWeight.W_700),
+                    ft.Text("This project may not exist or you are not the owner.", size=12, color=MUTED),
+                    ft.ElevatedButton("Back to projects", bgcolor=PRIMARY, color="white", on_click=lambda e: page.go("/projects")),
+                ],
+            ),
+        )
+        return shell(page, content, "/projects", nav_items, *session_user(page))
+
+    budget_val = float(proj.get("budget") or 0)
+    budget_str = f"${budget_val:,.2f}"
+    timeline = ""
+    if proj.get("start_date") or proj.get("end_date"):
+        timeline = f"{(proj.get('start_date') or '').strip()} — {(proj.get('end_date') or '').strip()}".strip(" —")
+    prj_label = f"PRJ-{int(proj['id']):04d}"
+    cat = (proj.get("category") or "").strip() or "—"
 
     summary = ft.Container(
         padding=16,
@@ -1261,32 +1406,105 @@ def view_project_detail(page):
             spacing=8,
             controls=[
                 ft.Text("Project Summary", size=12, weight=ft.FontWeight.W_700),
-                ft.Row(alignment=ft.MainAxisAlignment.SPACE_BETWEEN, controls=[ft.Text("Fixed Budget", size=11, color=MUTED), ft.Text("$4500", size=12, weight=ft.FontWeight.W_600)]),
-                ft.Row(alignment=ft.MainAxisAlignment.SPACE_BETWEEN, controls=[ft.Text("Status", size=11, color=MUTED), pill("Open", color=INFO, bg="#E0F2FE")]),
-                ft.Row(alignment=ft.MainAxisAlignment.SPACE_BETWEEN, controls=[ft.Text("Timeline", size=11, color=MUTED), ft.Text("Oct 12, 2023 — Nov 30, 2023", size=11)]),
-                ft.Row(alignment=ft.MainAxisAlignment.SPACE_BETWEEN, controls=[ft.Text("Job Category", size=11, color=MUTED), ft.Text("Fintech Development", size=11)]),
-                ft.OutlinedButton("View Public Listing"),
+                ft.Row(
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    controls=[
+                        ft.Text("Project ID", size=11, color=MUTED),
+                        ft.Text(prj_label, size=12, weight=ft.FontWeight.W_600),
+                    ],
+                ),
+                ft.Row(
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    controls=[ft.Text("Budget", size=11, color=MUTED), ft.Text(budget_str, size=12, weight=ft.FontWeight.W_600)],
+                ),
+                ft.Row(
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    controls=[ft.Text("Status", size=11, color=MUTED), detail_status_pill(proj.get("status"))],
+                ),
+                ft.Row(
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    controls=[ft.Text("Timeline", size=11, color=MUTED), ft.Text(timeline or "—", size=11)],
+                ),
+                ft.Row(
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    controls=[ft.Text("Category", size=11, color=MUTED), ft.Text(cat, size=11)],
+                ),
+                ft.Row(
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    controls=[ft.Text("Customer ref", size=11, color=MUTED), ft.Text((proj.get("customer_ref") or "—").strip(), size=11)],
+                ),
             ],
         ),
     )
 
-    content = ft.Row(
-        spacing=16,
+    proposals = ft.Column(
+        spacing=10,
         controls=[
-            ft.Column(expand=True, spacing=12, controls=[
-                ft.Text("Secure E-Commerce Payment Gateway Integration", size=18, weight=ft.FontWeight.W_700),
-                ft.Text("Project Description", size=12, weight=ft.FontWeight.W_600),
-                ft.Text(
-                    "We are looking for a senior fintech developer to integrate a robust, PCI-compliant escrow-based payment gateway.",
+            ft.Container(
+                padding=14,
+                border_radius=12,
+                border=ft.border.all(1, BORDER),
+                bgcolor="#F8FAFF",
+                content=ft.Text(
+                    "No proposals stored yet. (Proposal bidding can be wired to the proposals table next.)",
                     size=11,
                     color=MUTED,
                 ),
-                ft.Row(spacing=8, controls=[pill("Node.js"), pill("PCI Compliance"), pill("API Security"), pill("Redis"), pill("PostgreSQL")]),
-                ft.Divider(),
-                ft.Row(spacing=12, controls=[pill("Proposals (3)", color=TEXT, bg="#F1F5F9"), pill("Milestones & Contract", color=MUTED, bg="#F8FAFC")]),
-                proposals,
-            ]),
-            ft.Container(width=280, content=ft.Column(spacing=12, controls=[summary, help_card("Need help with this project?")]))
+            )
+        ],
+    )
+
+    desc = (proj.get("description") or "").strip() or "No description provided."
+
+    content = ft.Row(
+        spacing=16,
+        controls=[
+            ft.Column(
+                expand=True,
+                spacing=12,
+                controls=[
+                    ft.Row(
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        controls=[
+                            ft.Column(
+                                spacing=4,
+                                controls=[
+                                    ft.Text(proj.get("title") or "Project", size=18, weight=ft.FontWeight.W_700),
+                                    ft.Text(prj_label, size=11, color=MUTED),
+                                ],
+                            ),
+                            ft.Row(
+                                spacing=8,
+                                controls=[
+                                    ft.OutlinedButton("Back", on_click=lambda e: page.go("/projects")),
+                                    ft.OutlinedButton(
+                                        "Edit",
+                                        on_click=lambda e, pid=project_id: page.go(f"/project-create?id={pid}"),
+                                    ),
+                                    ft.OutlinedButton(
+                                        "Delete",
+                                        style=ft.ButtonStyle(color=DANGER),
+                                        on_click=lambda e, pid=project_id: _confirm_delete_project(page, pid, user_id),
+                                    ),
+                                ],
+                            ),
+                        ],
+                    ),
+                    ft.Text("Description", size=12, weight=ft.FontWeight.W_600),
+                    ft.Text(desc, size=11, color=MUTED),
+                    ft.Row(spacing=8, controls=[pill((proj.get("category") or "General").strip() or "General")]),
+                    ft.Divider(),
+                    ft.Row(
+                        spacing=12,
+                        controls=[
+                            pill("Proposals (0)", color=TEXT, bg="#F1F5F9"),
+                            pill("Milestones & Contract", color=MUTED, bg="#F8FAFC"),
+                        ],
+                    ),
+                    proposals,
+                ],
+            ),
+            ft.Container(width=280, content=ft.Column(spacing=12, controls=[summary, help_card("Need help with this project?")])),
         ],
     )
 
@@ -1345,24 +1563,80 @@ def view_project_create(page):
         ("Settings", ft.icons.SETTINGS_OUTLINED, "/settings"),
     ]
 
+    user_id = page.session.store.get("user_id")
+    edit_id = route_query_int(page, "id")
+
     title_field = ft.TextField(label="Project Title")
     desc_field = ft.TextField(label="Project Description", multiline=True, min_lines=3)
-    customer_ref_field = ft.TextField(label="Customer ID", expand=True, value="CUST-8821")
-    category_field = ft.TextField(label="Category", expand=True, value="Software Development")
-    start_date_field = ft.TextField(label="Start Date", expand=True, value="2024-05-01")
-    end_date_field = ft.TextField(label="Estimated End Date", expand=True, value="2024-08-15")
-    budget_field = ft.TextField(label="Total Project Budget (USD)", value="$ 2500")
+    customer_ref_field = ft.TextField(label="Customer ID", expand=True)
+    category_field = ft.TextField(label="Category", expand=True)
+    start_date_field = ft.TextField(label="Start Date", expand=True)
+    end_date_field = ft.TextField(label="Estimated End Date", expand=True)
+    budget_field = ft.TextField(label="Total Project Budget (USD)")
     feedback = ft.Text("", size=12, color=MUTED)
 
+    heading = ft.Text("Create New Project", size=18, weight=ft.FontWeight.W_700)
+
+    if user_id and edit_id:
+        existing = get_project_for_owner(edit_id, user_id)
+        if existing:
+            heading.value = f"Edit Project — PRJ-{int(existing['id']):04d}"
+            title_field.value = existing.get("title") or ""
+            desc_field.value = existing.get("description") or ""
+            customer_ref_field.value = existing.get("customer_ref") or ""
+            category_field.value = existing.get("category") or ""
+            start_date_field.value = existing.get("start_date") or ""
+            end_date_field.value = existing.get("end_date") or ""
+            b = float(existing.get("budget") or 0)
+            budget_field.value = f"${b:,.2f}" if b else ""
+        else:
+            feedback.value = "Project not found or you do not have access."
+            feedback.color = DANGER
+
     def submit_project(status: str):
-        user_id = page.session.store.get("user_id")
-        if not user_id:
+        uid = page.session.store.get("user_id")
+        if not uid:
             feedback.value = "Please login first."
             feedback.color = DANGER
             page.update()
             return
-        ok, message, _project_id = create_project(
-            owner_user_id=user_id,
+            
+        fields = [
+            title_field.value, desc_field.value, customer_ref_field.value,
+            category_field.value, start_date_field.value, end_date_field.value,
+            budget_field.value
+        ]
+        if any(not str(f or "").strip() for f in fields):
+            feedback.value = "Bütün xanaları doldurmaq mütləqdir."
+            feedback.color = DANGER
+            page.update()
+            return
+        if edit_id:
+            ok, message = update_project(
+                project_id=edit_id,
+                owner_user_id=uid,
+                title=title_field.value,
+                description=desc_field.value,
+                customer_ref=customer_ref_field.value,
+                category=category_field.value,
+                start_date=start_date_field.value,
+                end_date=end_date_field.value,
+                budget_raw=budget_field.value,
+                status=status,
+            )
+            if not ok:
+                feedback.value = message or "Project could not be updated."
+                feedback.color = DANGER
+                page.update()
+                return
+            feedback.value = "Project updated."
+            feedback.color = SUCCESS
+            page.update()
+            page.go(f"/project-detail?id={edit_id}")
+            return
+
+        ok, message, new_id = create_project(
+            owner_user_id=uid,
             title=title_field.value,
             description=desc_field.value,
             customer_ref=customer_ref_field.value,
@@ -1380,11 +1654,15 @@ def view_project_create(page):
         feedback.value = "Project saved successfully."
         feedback.color = SUCCESS
         page.update()
-        page.go("/projects")
+        if new_id:
+            page.go(f"/project-detail?id={new_id}")
+        else:
+            page.go("/projects")
 
     form = ft.Column(
         spacing=14,
         controls=[
+            heading,
             feedback,
             section("Project Identity"),
             title_field,
@@ -1478,7 +1756,7 @@ def view_proposal(page):
                         spacing=10,
                         controls=[
                             ft.Text("My Proposal History", size=12, weight=ft.FontWeight.W_700),
-                            ft.DataTable(
+                            ft.Row(scroll=ft.ScrollMode.AUTO, controls=[ft.DataTable(
                                 columns=[
                                     ft.DataColumn(ft.Text("Proposal ID")),
                                     ft.DataColumn(ft.Text("Amount")),
@@ -1499,7 +1777,7 @@ def view_proposal(page):
                                         ft.DataCell(ft.Text("2024-05-12 14:15")),
                                     ]),
                                 ],
-                            ),
+                            )]),
                         ],
                     ),
                 ),
@@ -1552,7 +1830,7 @@ def view_contract(page):
         ],
     )
 
-    table = ft.DataTable(
+    table = ft.Row(scroll=ft.ScrollMode.AUTO, controls=[ft.DataTable(
         columns=[
             ft.DataColumn(ft.Text("ID")),
             ft.DataColumn(ft.Text("Milestone Description")),
@@ -1565,7 +1843,7 @@ def view_contract(page):
             ft.DataRow(cells=[ft.DataCell(ft.Text("M2")), ft.DataCell(ft.Text("Frontend Development (Core)")), ft.DataCell(ft.Text("Nov 15, 2023")), ft.DataCell(ft.Text("$4,000.00")), ft.DataCell(pill("Active", color=INFO, bg="#E0F2FE"))]),
             ft.DataRow(cells=[ft.DataCell(ft.Text("M3")), ft.DataCell(ft.Text("API Integration & Database Setup")), ft.DataCell(ft.Text("Dec 05, 2023")), ft.DataCell(ft.Text("$3,500.00")), ft.DataCell(pill("Pending", color=WARNING, bg="#FEF3C7"))]),
         ],
-    )
+    )])
 
     right = ft.Column(
         spacing=12,
@@ -1666,7 +1944,7 @@ def view_escrow(page):
         ("Settings", ft.icons.SETTINGS_OUTLINED, "/settings"),
     ]
 
-    ledger = ft.DataTable(
+    ledger = ft.Row(scroll=ft.ScrollMode.AUTO, controls=[ft.DataTable(
         columns=[
             ft.DataColumn(ft.Text("ID")),
             ft.DataColumn(ft.Text("Type")),
@@ -1681,7 +1959,7 @@ def view_escrow(page):
             ft.DataRow(cells=[ft.DataCell(ft.Text("TXN-8823")), ft.DataCell(pill("Release", color=INFO, bg="#E0F2FE")), ft.DataCell(ft.Text("CON-205")), ft.DataCell(ft.Text("2024-05-20")), ft.DataCell(ft.Text("-$500.00")), ft.DataCell(pill("Pending", color=WARNING, bg="#FEF3C7"))]),
             ft.DataRow(cells=[ft.DataCell(ft.Text("TXN-8824")), ft.DataCell(pill("Refund", color=DANGER, bg="#FEE2E2")), ft.DataCell(ft.Text("CON-098")), ft.DataCell(ft.Text("2024-05-21")), ft.DataCell(ft.Text("-$300.00")), ft.DataCell(pill("Completed", color=SUCCESS, bg="#ECFDF3"))]),
         ],
-    )
+    )])
 
     right = ft.Column(
         spacing=12,
@@ -2102,7 +2380,7 @@ def view_user_management(page):
                             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                             controls=[ft.Text("Recent Project Activity", size=12, weight=ft.FontWeight.W_700), ft.TextButton("View Full History")],
                         ),
-                        ft.DataTable(
+                        ft.Row(scroll=ft.ScrollMode.AUTO, controls=[ft.DataTable(
                             columns=[
                                 ft.DataColumn(ft.Text("Project / Contract")),
                                 ft.DataColumn(ft.Text("Amount")),
@@ -2113,7 +2391,7 @@ def view_user_management(page):
                                 ft.DataRow(cells=[ft.DataCell(ft.Text("Real Estate Tokenization UI")), ft.DataCell(ft.Text("$3,200")), ft.DataCell(pill("In Progress", color=INFO, bg="#E0F2FE"))]),
                                 ft.DataRow(cells=[ft.DataCell(ft.Text("Payment Gateway Audit")), ft.DataCell(ft.Text("$1,800")), ft.DataCell(pill("Completed", color=SUCCESS, bg="#ECFDF3"))]),
                             ],
-                        ),
+                        )]),
                     ],
                 ),
             ),
@@ -2240,7 +2518,8 @@ def view_settings(page):
 
 def router(page):
     init_db()
-    route = page.route or "/"
+    raw_route = page.route or "/"
+    route = raw_route.split("?")[0]
     uid = page.session.store.get("user_id")
     if route not in PUBLIC_ROUTES and not uid:
         page.go("/")
