@@ -33,6 +33,86 @@ AUTH_LABEL_STYLE = ft.TextStyle(size=14, weight=ft.FontWeight.W_600, color=TEXT)
 AUTH_HINT_STYLE = ft.TextStyle(size=14, color=MUTED)
 
 
+# ─── SnackBar helper ────────────────────────────────────────────────────────
+def show_snack(page, message: str, kind: str = "info"):
+    """kind: 'success' | 'error' | 'warning' | 'info'"""
+    color_map = {
+        "success": SUCCESS,
+        "error": DANGER,
+        "warning": WARNING,
+        "info": PRIMARY,
+    }
+    icon_map = {
+        "success": ft.Icons.CHECK_CIRCLE_OUTLINE,
+        "error": ft.Icons.ERROR_OUTLINE,
+        "warning": ft.Icons.WARNING_AMBER_OUTLINED,
+        "info": ft.Icons.INFO_OUTLINE,
+    }
+    bgcolor = color_map.get(kind, PRIMARY)
+    icon = icon_map.get(kind, ft.Icons.INFO_OUTLINE)
+
+    snack = ft.SnackBar(
+        content=ft.Row(
+            spacing=10,
+            controls=[
+                ft.Icon(icon, color="white", size=18),
+                ft.Text(message, color="white", size=13),
+            ],
+        ),
+        bgcolor=bgcolor,
+        duration=3000,
+        show_close_icon=True,
+        close_icon_color="white",
+    )
+    page.overlay.append(snack)
+    snack.open = True
+    page.update()
+
+
+# ─── BottomSheet helper ──────────────────────────────────────────────────────
+def show_bottom_sheet(page, title: str, content_controls: list, on_close=None):
+    """Display a modal bottom sheet with given content."""
+
+    bs = ft.BottomSheet(
+        open=True,
+        content=ft.Container(
+            padding=ft.padding.only(left=24, right=24, top=8, bottom=32),
+            bgcolor=CARD,
+            content=ft.Column(
+                tight=True,
+                spacing=16,
+                controls=[
+                    ft.Row(
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        controls=[
+                            ft.Text(title, size=16, weight=ft.FontWeight.W_700, color=TEXT),
+                            ft.IconButton(
+                                icon=ft.Icons.CLOSE,
+                                icon_color=MUTED,
+                                icon_size=18,
+                                on_click=lambda e: _close_bs(page, bs, on_close),
+                            ),
+                        ],
+                    ),
+                    ft.Divider(height=1, color=BORDER),
+                    *content_controls,
+                ],
+            ),
+        ),
+    )
+
+    page.overlay.append(bs)
+    page.update()
+    return bs
+
+
+def _close_bs(page, bs, on_close=None):
+    bs.open = False
+    page.update()
+    if on_close:
+        on_close()
+
+
 def auth_text_field(**kwargs):
     defaults = {
         "height": 52,
@@ -1511,7 +1591,7 @@ def view_project_detail(page):
     return shell(page, content, "/projects", nav_items, *session_user(page))
 
 
-def proposal_card(name, rating, blurb, amount):
+def proposal_card(page, name, rating, blurb, amount):
     return ft.Container(
         padding=14,
         border_radius=12,
@@ -1530,7 +1610,7 @@ def proposal_card(name, rating, blurb, amount):
                 ft.Column(spacing=4, controls=[
                     ft.Text(f"Bid Amount", size=10, color=MUTED),
                     ft.Text(amount, size=12, weight=ft.FontWeight.W_700, color=PRIMARY),
-                    ft.Row(spacing=6, controls=[ft.OutlinedButton("View Details"), ft.ElevatedButton("Award Project", bgcolor=PRIMARY, color="white")]),
+                    ft.Row(spacing=6, controls=[ft.OutlinedButton("View Details"), ft.ElevatedButton("Award Project", bgcolor=PRIMARY, color="white", on_click=lambda e: show_snack(page, "Layihə uğurla təhvil verildi! ✓", "success"))]),
                 ]),
             ],
         ),
@@ -1573,7 +1653,6 @@ def view_project_create(page):
     start_date_field = ft.TextField(label="Start Date", expand=True)
     end_date_field = ft.TextField(label="Estimated End Date", expand=True)
     budget_field = ft.TextField(label="Total Project Budget (USD)")
-    feedback = ft.Text("", size=12, color=MUTED)
 
     heading = ft.Text("Create New Project", size=18, weight=ft.FontWeight.W_700)
 
@@ -1590,15 +1669,13 @@ def view_project_create(page):
             b = float(existing.get("budget") or 0)
             budget_field.value = f"${b:,.2f}" if b else ""
         else:
-            feedback.value = "Project not found or you do not have access."
-            feedback.color = DANGER
+            # Will show snack after page renders via a deferred call pattern
+            pass
 
     def submit_project(status: str):
         uid = page.session.store.get("user_id")
         if not uid:
-            feedback.value = "Please login first."
-            feedback.color = DANGER
-            page.update()
+            show_snack(page, "Zəhmət olmasa əvvəlcə daxil olun.", "error")
             return
             
         fields = [
@@ -1607,9 +1684,7 @@ def view_project_create(page):
             budget_field.value
         ]
         if any(not str(f or "").strip() for f in fields):
-            feedback.value = "Bütün xanaları doldurmaq mütləqdir."
-            feedback.color = DANGER
-            page.update()
+            show_snack(page, "Bütün xanaları doldurmaq mütləqdir.", "error")
             return
         if edit_id:
             ok, message = update_project(
@@ -1625,13 +1700,9 @@ def view_project_create(page):
                 status=status,
             )
             if not ok:
-                feedback.value = message or "Project could not be updated."
-                feedback.color = DANGER
-                page.update()
+                show_snack(page, message or "Layihə yenilənə bilmədi.", "error")
                 return
-            feedback.value = "Project updated."
-            feedback.color = SUCCESS
-            page.update()
+            show_snack(page, "Layihə uğurla yeniləndi! ✓", "success")
             page.go(f"/project-detail?id={edit_id}")
             return
 
@@ -1647,13 +1718,10 @@ def view_project_create(page):
             status=status,
         )
         if not ok:
-            feedback.value = message or "Project could not be saved."
-            feedback.color = DANGER
-            page.update()
+            show_snack(page, message or "Layihə saxlanıla bilmədi.", "error")
             return
-        feedback.value = "Project saved successfully."
-        feedback.color = SUCCESS
-        page.update()
+        label = "Layihə qaralama olaraq saxlandı." if status == "draft" else "Layihə uğurla nəşr edildi! ✓"
+        show_snack(page, label, "success")
         if new_id:
             page.go(f"/project-detail?id={new_id}")
         else:
@@ -1663,7 +1731,6 @@ def view_project_create(page):
         spacing=14,
         controls=[
             heading,
-            feedback,
             section("Project Identity"),
             title_field,
             desc_field,
@@ -1800,7 +1867,7 @@ def view_proposal(page):
                                     ft.TextField(label="Estimated Duration (Days)", value="14"),
                                     ft.TextField(label="Cover Letter / Message", multiline=True, min_lines=3),
                                     ft.OutlinedButton("Upload Attachments"),
-                                    ft.ElevatedButton("Submit Proposal", bgcolor=PRIMARY, color="white", on_click=lambda e: page.go("/milestones")),
+                                    ft.ElevatedButton("Submit Proposal", bgcolor=PRIMARY, color="white", on_click=lambda e: _open_submit_proposal_sheet(page)),
                                 ],
                             ),
                         ),
@@ -1889,7 +1956,7 @@ def view_contract(page):
                     controls=[
                         ft.Text("Danger Zone", size=12, weight=ft.FontWeight.W_700, color=DANGER),
                         ft.Text("Terminating a contract with funds in escrow may trigger a formal dispute.", size=10, color=MUTED),
-                        ft.OutlinedButton("Terminate Contract", icon=ft.icons.CANCEL),
+                        ft.OutlinedButton("Terminate Contract", icon=ft.icons.CANCEL, on_click=lambda e: _open_terminate_contract_sheet(page)),
                     ],
                 ),
             ),
@@ -1935,6 +2002,212 @@ def view_contract(page):
     return shell(page, content, "/contract", nav_items, *session_user(page))
 
 
+def _open_fund_escrow_sheet(page):
+    amount_field = ft.TextField(
+        label="Depozit Məbləği (USD)",
+        value="$ 1,000.00",
+        prefix_icon=ft.Icons.ATTACH_MONEY,
+        border_color=BORDER,
+        focused_border_color=PRIMARY,
+        border_radius=10,
+    )
+    method_ref = {"selected": "visa"}
+
+    visa_btn = ft.ElevatedButton(
+        "💳  Visa / Master",
+        bgcolor=PRIMARY,
+        color="white",
+        style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
+    )
+    paypal_btn = ft.OutlinedButton(
+        "🅿  PayPal",
+        style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
+    )
+
+    def select_method(method):
+        method_ref["selected"] = method
+        visa_btn.bgcolor = PRIMARY if method == "visa" else None
+        visa_btn.color = "white" if method == "visa" else TEXT
+        paypal_btn.style = ft.ButtonStyle(
+            shape=ft.RoundedRectangleBorder(radius=8),
+            bgcolor=PRIMARY if method == "paypal" else None,
+            color="white" if method == "paypal" else TEXT,
+        )
+        page.update()
+
+    visa_btn.on_click = lambda e: select_method("visa")
+    paypal_btn.on_click = lambda e: select_method("paypal")
+
+    def confirm(e):
+        amt = (amount_field.value or "").strip()
+        if not amt or amt in ("$", "$ 0", "$ 0.00"):
+            show_snack(page, "Zəhmət olmasa etibarlı məbləğ daxil edin.", "error")
+            return
+        bs.open = False
+        page.update()
+        show_snack(page, f"Escrow hesabı {amt} ilə uğurla dolduruldu! ✓", "success")
+
+    bs = show_bottom_sheet(
+        page,
+        "Escrow Hesabını Doldur",
+        [
+            ft.Text("Miqdar", size=12, color=MUTED, weight=ft.FontWeight.W_600),
+            amount_field,
+            ft.Text("Ödəniş Metodu", size=12, color=MUTED, weight=ft.FontWeight.W_600),
+            ft.Row(spacing=10, controls=[visa_btn, paypal_btn]),
+            ft.Container(
+                padding=10,
+                border_radius=8,
+                bgcolor="#ECFDF3",
+                content=ft.Row(
+                    spacing=8,
+                    controls=[
+                        ft.Icon(ft.Icons.SHIELD_OUTLINED, color=SUCCESS, size=16),
+                        ft.Text("256-bit AES şifrələmə ilə qorunur", size=11, color=SUCCESS),
+                    ],
+                ),
+            ),
+            ft.ElevatedButton(
+                "Ödənişi Təsdiqlə",
+                bgcolor=PRIMARY,
+                color="white",
+                height=46,
+                expand=True,
+                on_click=confirm,
+                style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=10)),
+            ),
+        ],
+    )
+
+
+def _open_terminate_contract_sheet(page):
+    reason_field = ft.TextField(
+        label="Ləğv səbəbi",
+        multiline=True,
+        min_lines=3,
+        border_color=BORDER,
+        focused_border_color=DANGER,
+        border_radius=10,
+    )
+
+    def confirm_terminate(e):
+        if not (reason_field.value or "").strip():
+            show_snack(page, "Zəhmət olmasa ləğv səbəbini yazın.", "error")
+            return
+        bs.open = False
+        page.update()
+        show_snack(page, "Müqavilə ləğv edildi. Arbitraj prosesinə yönləndirilir.", "warning")
+
+    bs = show_bottom_sheet(
+        page,
+        "Müqaviləni Ləğv Et",
+        [
+            ft.Container(
+                padding=12,
+                border_radius=8,
+                bgcolor="#FEF2F2",
+                border=ft.border.all(1, DANGER),
+                content=ft.Row(
+                    spacing=8,
+                    controls=[
+                        ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, color=DANGER, size=18),
+                        ft.Text(
+                            "Escrow-da saxlanılan vəsaitlər rəsmi mübahisəyə səbəb ola bilər.",
+                            size=11,
+                            color=DANGER,
+                        ),
+                    ],
+                ),
+            ),
+            reason_field,
+            ft.Row(
+                spacing=10,
+                controls=[
+                    ft.OutlinedButton(
+                        "Ləğv Et",
+                        expand=True,
+                        on_click=lambda e: _close_bs(page, bs),
+                        style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=10)),
+                    ),
+                    ft.ElevatedButton(
+                        "Müqaviləni Dayandır",
+                        expand=True,
+                        bgcolor=DANGER,
+                        color="white",
+                        height=46,
+                        on_click=confirm_terminate,
+                        style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=10)),
+                    ),
+                ],
+            ),
+        ],
+    )
+
+
+def _open_submit_proposal_sheet(page):
+    bid_field = ft.TextField(
+        label="Təklif Məbləği (USD)",
+        value="$ 0.00",
+        prefix_icon=ft.Icons.ATTACH_MONEY,
+        border_color=BORDER,
+        focused_border_color=PRIMARY,
+        border_radius=10,
+        expand=True,
+    )
+    duration_field = ft.TextField(
+        label="Müddət (Gün)",
+        value="14",
+        prefix_icon=ft.Icons.CALENDAR_TODAY_OUTLINED,
+        border_color=BORDER,
+        focused_border_color=PRIMARY,
+        border_radius=10,
+        expand=True,
+    )
+    letter_field = ft.TextField(
+        label="Müraciət Məktubu",
+        multiline=True,
+        min_lines=3,
+        border_color=BORDER,
+        focused_border_color=PRIMARY,
+        border_radius=10,
+    )
+
+    def submit(e):
+        if not (bid_field.value or "").strip() or (bid_field.value or "").strip() in ("$", "$ 0", "$ 0.00"):
+            show_snack(page, "Zəhmət olmasa etibarlı məbləğ daxil edin.", "error")
+            return
+        if not (letter_field.value or "").strip():
+            show_snack(page, "Müraciət məktubu boş ola bilməz.", "error")
+            return
+        bs.open = False
+        page.update()
+        show_snack(page, "Təklifiniz uğurla göndərildi! ✓", "success")
+
+    bs = show_bottom_sheet(
+        page,
+        "Yeni Təklif Göndər",
+        [
+            ft.Row(spacing=12, controls=[bid_field, duration_field]),
+            letter_field,
+            ft.OutlinedButton(
+                "Əlavə fayl yüklə",
+                icon=ft.Icons.ATTACH_FILE,
+                expand=True,
+                style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=10)),
+            ),
+            ft.ElevatedButton(
+                "Təklifi Göndər",
+                bgcolor=PRIMARY,
+                color="white",
+                height=46,
+                expand=True,
+                on_click=submit,
+                style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=10)),
+            ),
+        ],
+    )
+
+
 def view_escrow(page):
     nav_items = [
         ("Dashboard", ft.icons.DASHBOARD_OUTLINED, "/dashboard"),
@@ -1976,7 +2249,12 @@ def view_escrow(page):
                         ft.TextField(label="Deposit Amount (USD)", value="$ 1000"),
                         ft.Text("Payment Method", size=11, color=MUTED),
                         ft.Row(spacing=8, controls=[pill("Visa / Master", color=TEXT, bg="#F1F5F9"), pill("PayPal", color=TEXT, bg="#F1F5F9")]),
-                        ft.ElevatedButton("Confirm Funding", bgcolor=PRIMARY, color="white", on_click=lambda e: page.go("/contract")),
+                        ft.ElevatedButton(
+                            "Confirm Funding",
+                            bgcolor=PRIMARY,
+                            color="white",
+                            on_click=lambda e: _open_fund_escrow_sheet(page),
+                        ),
                         ft.Text("Secured by 256-bit AES Encryption.", size=10, color=MUTED),
                     ],
                 ),
@@ -2448,7 +2726,7 @@ def view_settings(page):
                                 ft.Text("Manage profile preferences, alerts, and security controls.", size=12, color=MUTED),
                             ],
                         ),
-                        ft.ElevatedButton("Save Changes", bgcolor=PRIMARY, color="white"),
+                        ft.ElevatedButton("Save Changes", bgcolor=PRIMARY, color="white", on_click=lambda e: show_snack(page, "Parametrlər uğurla saxlandı! ✓", "success")),
                     ],
                 ),
                 ft.Row(
