@@ -440,6 +440,7 @@ def get_projects_for_user(owner_user_id: int) -> list[dict]:
             """
             SELECT
                 id,
+                owner_user_id,
                 title,
                 description,
                 customer_ref,
@@ -447,7 +448,9 @@ def get_projects_for_user(owner_user_id: int) -> list[dict]:
                 start_date,
                 end_date,
                 budget,
-                status
+                status,
+                created_at,
+                updated_at
             FROM projects
             WHERE owner_user_id = ?
             ORDER BY id DESC

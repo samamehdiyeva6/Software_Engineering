@@ -1,26 +1,34 @@
-from fastapi import FastAPI
-from sqlalchemy import create_engine, text
-from sqlalchemy.ext.declarative import declarative_base
+from contextlib import asynccontextmanager
 
-app = FastAPI()
-URI = "sqlite:///escrowflow.db"
-engine = create_engine(URI)
-Base = declarative_base()
+from fastapi import FastAPI
+
+from api.routers.auth import router as auth_router
+from api.routers.projects import router as projects_router
+from database import init_db
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(
+    title="EscrowFlow API",
+    version="1.0.0",
+    description="Structured FastAPI endpoints for authentication and project CRUD.",
+    lifespan=lifespan,
+)
+
+app.include_router(auth_router, prefix="/api/v1")
+app.include_router(projects_router, prefix="/api/v1")
+
 
 @app.get("/")
-def home():
-    return {"message": "EscrowFlow API"}
+def home() -> dict[str, str]:
+    return {"message": "EscrowFlow API is running."}
 
-@app.get("/users")
-def get_users():
-    with engine.connect() as conn:
-        result = conn.execute(text("SELECT id, email, role FROM users"))
-        users = [dict(row) for row in result.mappings()]
-    return {"users": users}
 
-@app.get("/projects")
-def get_projects():
-    with engine.connect() as conn:
-        result = conn.execute(text("SELECT id, title, description, status FROM projects"))
-        projects = [dict(row) for row in result.mappings()]
-    return {"projects": projects}
+@app.get("/health")
+def healthcheck() -> dict[str, str]:
+    return {"status": "ok"}
